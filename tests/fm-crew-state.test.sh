@@ -691,6 +691,27 @@ test_terminal_failed_then_paused() {
   pass "later declared pause supersedes terminal failed run"
 }
 
+test_pre_run_paused_does_not_hide_failed() {
+  reset_fakes
+  local d; d=$(new_case paused-then-failed)
+  make_repo_on_branch "$d/wt" fm/feat-paused-failed
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-paused-failed.meta" "window=fm:fm-feat-paused-failed" "worktree=$d/wt" "kind=ship"
+  # The crew declared the pause FIRST (external wait), then resumed, committed, and
+  # ran validation that failed without appending a new status line - so the last
+  # log line is still `paused` while the run is terminally failed. Pin the ordering
+  # deterministically: the pause append predates the resumed commit.
+  printf 'paused: awaiting the upstream release\n' > "$d/state/feat-paused-failed.status"
+  touch -d '2020-01-01T00:00:00' "$d/state/feat-paused-failed.status"
+  GIT_AUTHOR_DATE='2020-06-01T00:00:00' GIT_COMMITTER_DATE='2020-06-01T00:00:00' \
+    git -C "$d/wt" commit -q --allow-empty -m 'resumed work after pause'
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-paused-failed)"
+  local out; out=$(run_crew_state "$d" feat-paused-failed)
+  assert_contains "$out" "state: failed" "pre-run pause must not hide the later failed run"
+  assert_contains "$out" "source: run-step" "unsuperseded failure stays run-step sourced"
+  pass "a pause declared before the failed run does not mask the failure"
+}
+
 test_active_run_supersedes_paused() {
   reset_fakes
   local d; d=$(new_case active-over-paused)
@@ -1202,6 +1223,7 @@ test_top_level_fixing_done_log_stays_working
 test_terminal_passed
 test_terminal_failed
 test_terminal_failed_then_paused
+test_pre_run_paused_does_not_hide_failed
 test_active_run_supersedes_paused
 test_passed_run_supersedes_paused
 test_cross_branch_attribution_via_runs_list

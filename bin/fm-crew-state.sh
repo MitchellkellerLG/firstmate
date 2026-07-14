@@ -24,9 +24,12 @@
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
 #      passed/checks-passed -> done, failed/cancelled -> failed. A later explicit
-#      paused event may supersede only failed/cancelled: it declares the crew's
-#      current post-failure recovery state, while an active or successful run
-#      still supersedes any stale pause. EXCEPT: while
+#      paused event may supersede only failed/cancelled, and only when it is
+#      PROVEN to have been declared after that run (its status-log append is no
+#      older than the crew's HEAD commit, which the run cannot have finished
+#      before) - so it declares the crew's current post-failure recovery state,
+#      while a stale pre-run pause never hides a later genuine failure and an
+#      active or successful run still supersedes any stale pause. EXCEPT: while
 #      the active step is ci, `axi status` alone cannot tell "still waiting on
 #      checks" from "checks green, waiting on merge" (see nm_ci_checks_state) -
 #      a ci-step log-tail check overrides working -> done once checks read
@@ -128,6 +131,33 @@ map_log_state() {  # <line>
 
 LOG_LINE=$(log_last_line || true)
 LOG_VERB=$(status_line_verb "$LOG_LINE")
+
+# Modification time (epoch seconds) of a path; empty on failure. Used to place the
+# last status-log append in time relative to the crew's commits.
+path_mtime() {  # <path>
+  if [ "$(uname)" = Darwin ]; then
+    stat -f %m "$1" 2>/dev/null
+  else
+    stat -c %Y "$1" 2>/dev/null
+  fi
+}
+
+# Prove that the crew's declared pause (the last status-log append) happened after
+# a terminal failed/cancelled run, so it may supersede that run. The proof is a
+# timestamp comparison: the status file's mtime - when the pause line was appended -
+# must be no older than the crew's HEAD commit. A no-mistakes run cannot finish
+# before the commit it validates exists, so a pause older than HEAD necessarily
+# predates any run of that commit and is a stale pre-run pause that must not hide
+# the failure. Unreadable timestamps fail closed (return 1), preserving the failed
+# run's visibility.
+pause_after_failed_run() {
+  local pause_ts head_ts
+  pause_ts=$(path_mtime "$LOG")
+  case "$pause_ts" in ''|*[!0-9]*) return 1 ;; esac
+  head_ts=$(git -C "$WT" show -s --format=%ct HEAD 2>/dev/null)
+  case "$head_ts" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$pause_ts" -ge "$head_ts" ]
+}
 
 # pane_readable is consulted ONLY in the no-run fallback below. The run-step path
 # stays authoritative regardless of pane liveness - judge by the run-step, not the
@@ -531,9 +561,13 @@ if [ "$HAVE_RUN" = 1 ]; then
   # failed forever. A later explicit pause is the crewmate's declaration that it
   # recovered from that run and is now deliberately waiting on an external
   # dependency. Respect that narrow transition here, at the current-state
-  # contract's owner. Active, parked, and successful runs remain authoritative,
-  # so stale pauses cannot mask ongoing work, an active gate, or a shipped result.
-  if [ "$RUN_STATE" = failed ] && status_is_paused "$LOG_LINE"; then
+  # contract's owner - but ONLY when the pause is proven to have been declared
+  # AFTER the failed run (pause_after_failed_run). A stale pause left from BEFORE
+  # the run - the crew paused, then resumed, ran, and failed without appending a
+  # new status line - must never mask that later genuine failure. Active, parked,
+  # and successful runs remain authoritative, so stale pauses cannot mask ongoing
+  # work, an active gate, or a shipped result either.
+  if [ "$RUN_STATE" = failed ] && status_is_paused "$LOG_LINE" && pause_after_failed_run; then
     emit paused status-log "$(status_line_note "$LOG_LINE")${SEP}terminal run superseded by declared pause"
   fi
 
