@@ -23,17 +23,96 @@ fm_pid_alive() {
   kill -0 "$pid" 2>/dev/null
 }
 
-fm_pid_identity() {
+# Boot-clock process start time from /proc/<pid>/stat field 22 (starttime, in clock
+# ticks since boot). It is measured against the monotonic boot clock, so unlike ps's
+# wall-clock lstart it does NOT re-render differently after a system-clock correction
+# (e.g. a WSL2 host waking from sleep). That drift made the same live process look
+# recycled and declared a healthy watcher dead - issue #433.
+# See docs/watcher-pid-identity.md for the incident and validation record covering
+# the identity helpers below (fm_pid_starttime, fm_pid_identity_legacy,
+# fm_pid_identity, fm_pid_identity_matches).
+fm_pid_starttime() {
+  local pid=$1 stat rest
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ -r "/proc/$pid/stat" ] || return 1
+  stat=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
+  [ -n "$stat" ] || return 1
+  # comm (field 2) is parenthesized and may itself contain spaces and parens; strip
+  # through the FINAL ") " so positional splitting of the remaining fields is safe.
+  rest=${stat##*) }
+  [ "$rest" != "$stat" ] || return 1
+  # shellcheck disable=SC2086 # deliberate word-splitting of the space-delimited stat tail
+  set -- $rest
+  # field 22 overall = starttime = 20th field after comm (fields 1-2 stripped above).
+  case "${20-}" in
+    ''|*[!0-9]*) return 1 ;;
+    *) printf '%s\n' "${20}" ;;
+  esac
+}
+
+# Command line from /proc/<pid>/cmdline (NUL-separated), rendered space-separated.
+# Stable across a pid's lifetime, so it complements starttime to catch pid reuse.
+fm_pid_cmdline() {
+  local pid=$1 out
+  [ -r "/proc/$pid/cmdline" ] || return 1
+  out=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null) || return 1
+  printf '%s\n' "$out" | sed 's/[[:space:]]*$//'
+}
+
+# Legacy wall-clock identity: ps lstart + command. Used as the portable fallback on
+# hosts without procfs (macOS) and for reading pre-#433 lock records (see the compat
+# branch in fm_pid_identity_matches). Pin LC_ALL=C so lstart's date format is
+# locale-invariant: the identity is written under one locale but re-read under the
+# machine's ambient locale, which would otherwise mismatch on a non-C locale (e.g. ko_KR).
+fm_pid_identity_legacy() {
   local pid=$1 out
   case "$pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
-  # Pin LC_ALL=C so lstart's date format is locale-invariant: the identity is
-  # written under one locale but re-read under the machine's ambient locale, which
-  # would otherwise mismatch on a non-C locale (e.g. ko_KR) and reject a live watcher.
   out=$(LC_ALL=C ps -p "$pid" -o lstart= -o command= 2>/dev/null) || return 1
   [ -n "$out" ] || return 1
   printf '%s\n' "$out" | sed 's/^[[:space:]]*//'
+}
+
+fm_pid_identity() {
+  local pid=$1 starttime cmd
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  # Prefer the boot-clock starttime (issue #433); fall back to the legacy wall-clock
+  # form only where procfs is unavailable (macOS).
+  if starttime=$(fm_pid_starttime "$pid"); then
+    cmd=$(fm_pid_cmdline "$pid") || cmd=
+    printf 'starttime:%s %s\n' "$starttime" "$cmd"
+    return 0
+  fi
+  fm_pid_identity_legacy "$pid"
+}
+
+# Shared owner of "is this live pid the same process that recorded this stored
+# identity?", including the mid-flight compat path. All disk-backed identity checks
+# (watcher lock, afk-launch lock, supervise-daemon lock) route through here.
+fm_pid_identity_matches() {
+  local pid=$1 stored=$2 current legacy
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ -n "$stored" ] || return 1
+  current=$(fm_pid_identity "$pid") || return 1
+  [ "$current" = "$stored" ] && return 0
+  # Compat: a lock written before #433 landed stored the legacy ps-lstart form. If
+  # the stored value is not new-format, accept a match on the legacy rendering of
+  # this same live pid, so the format transition does not declare a live process
+  # dead once. A new-format ("starttime:") mismatch is always a real mismatch.
+  case "$stored" in
+    starttime:*) return 1 ;;
+    *)
+      legacy=$(fm_pid_identity_legacy "$pid") || return 1
+      [ "$legacy" = "$stored" ]
+      ;;
+  esac
 }
 
 fm_path_mtime() {
@@ -51,16 +130,14 @@ fm_path_age() {
 }
 
 fm_watcher_lock_matches_pid() {
-  local state=$1 watch_path=$2 pid=$3 home=${4:-$FM_HOME} lockdir lock_home lock_path lock_identity current_identity
+  local state=$1 watch_path=$2 pid=$3 home=${4:-$FM_HOME} lockdir lock_home lock_path lock_identity
   lockdir="$state/.watch.lock"
   lock_home=$(cat "$lockdir/fm-home" 2>/dev/null || true)
   lock_path=$(cat "$lockdir/watcher-path" 2>/dev/null || true)
   lock_identity=$(cat "$lockdir/pid-identity" 2>/dev/null || true)
   [ "$lock_home" = "$home" ] || return 1
   [ "$lock_path" = "$watch_path" ] || return 1
-  [ -n "$lock_identity" ] || return 1
-  current_identity=$(fm_pid_identity "$pid") || return 1
-  [ "$current_identity" = "$lock_identity" ]
+  fm_pid_identity_matches "$pid" "$lock_identity"
 }
 
 FM_WATCHER_HEALTHY_PID=

@@ -703,8 +703,92 @@ test_pid_identity_is_locale_invariant() {
   pass "fm_pid_identity is locale-invariant across LC_ALL/LC_TIME"
 }
 
+test_pid_identity_immune_to_clock_drift() {
+  # Reproduce issue #433: ps -o lstart= re-renders a live process's start time from
+  # the CURRENT wall clock, so a clock correction (e.g. a WSL2 host waking from
+  # sleep) makes the SAME live pid render a different start time and look recycled.
+  # Mock ps so its lstart drifts across successive reads and confirm the legacy
+  # (lstart) identity false-negatives while the procfs-starttime identity is stable.
+  if [ ! -r /proc/self/stat ]; then
+    pass "skipped clock-drift test: no procfs (fm_pid_identity uses the lstart fallback here)"
+    return
+  fi
+  local live fakebin id1 id2 legacy1 legacy2
+  sleep 300 &
+  live=$!
+  fakebin=$(mktemp -d)
+  # A ps stub whose lstart output drifts by a second on each successive call for the
+  # same pid, exactly as the real ps does across a wall-clock correction. It logs a
+  # per-invocation counter so the two legacy reads see different start times.
+  cat > "$fakebin/ps" <<'EOF'
+#!/usr/bin/env bash
+n=$(cat "$FAKE_PS_COUNT" 2>/dev/null || echo 0); n=$((n + 1)); printf '%s' "$n" > "$FAKE_PS_COUNT"
+printf 'Fri Jul 10 11:54:%02d 2026 bash /path/bin/fm-watch.sh\n' "$((3 + n))"
+EOF
+  chmod +x "$fakebin/ps"
+  export FAKE_PS_COUNT="$fakebin/count"
+  # New identity ignores ps entirely on a procfs host, so both reads agree.
+  id1=$(PATH="$fakebin:$PATH" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live")
+  id2=$(PATH="$fakebin:$PATH" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live")
+  # Legacy identity uses the (mocked, drifting) ps, so the two reads disagree - the
+  # exact false-negative #433 describes.
+  legacy1=$(PATH="$fakebin:$PATH" bash -c '. "$1"; fm_pid_identity_legacy "$2"' _ "$LIB" "$live")
+  legacy2=$(PATH="$fakebin:$PATH" bash -c '. "$1"; fm_pid_identity_legacy "$2"' _ "$LIB" "$live")
+  unset FAKE_PS_COUNT
+  rm -rf "$fakebin"
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+  [ -n "$id1" ] || fail "fm_pid_identity produced no identity for a live pid"
+  case "$id1" in
+    starttime:*) : ;;
+    *) fail "fm_pid_identity did not use the procfs starttime form (got '$id1')" ;;
+  esac
+  [ "$id1" = "$id2" ] || fail "fm_pid_identity drifted across reads of a stable process (got '$id1' then '$id2')"
+  [ "$legacy1" != "$legacy2" ] || fail "test setup broken: mocked ps lstart did not drift"
+  pass "fm_pid_identity is immune to wall-clock drift where legacy lstart false-negatives (#433)"
+}
+
+test_pid_identity_matches_and_compat() {
+  # fm_pid_identity_matches is the shared owner of the disk-backed "same process?"
+  # check. It must confirm a live pid against its own identity, honor the mid-flight
+  # compat path (a lock written before #433 stored the legacy lstart form), and
+  # reject foreign or empty identities.
+  local live newid legacy other otherid
+  sleep 300 &
+  live=$!
+  sleep 301 &
+  other=$!
+  newid=$(bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live")
+  legacy=$(bash -c '. "$1"; fm_pid_identity_legacy "$2"' _ "$LIB" "$live")
+  otherid=$(bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$other")
+  # New-format self-match.
+  bash -c '. "$1"; fm_pid_identity_matches "$2" "$3"' _ "$LIB" "$live" "$newid" \
+    || fail "fm_pid_identity_matches rejected a live pid's own identity"
+  # Mid-flight compat: a pre-#433 lock stored the legacy lstart form; the same live
+  # pid must still be recognized so the format transition does not kill a live watcher.
+  bash -c '. "$1"; fm_pid_identity_matches "$2" "$3"' _ "$LIB" "$live" "$legacy" \
+    || fail "fm_pid_identity_matches rejected a legacy-format identity for the same live pid (#433 compat)"
+  # A different live process's identity must not match.
+  if bash -c '. "$1"; fm_pid_identity_matches "$2" "$3"' _ "$LIB" "$live" "$otherid"; then
+    fail "fm_pid_identity_matches accepted a different process's identity"
+  fi
+  # An empty stored identity never matches.
+  if bash -c '. "$1"; fm_pid_identity_matches "$2" ""' _ "$LIB" "$live"; then
+    fail "fm_pid_identity_matches accepted an empty stored identity"
+  fi
+  kill "$live" "$other" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+  wait "$other" 2>/dev/null || true
+  # otherid differs from newid: the two sleeps carry distinct command lines (and
+  # generally distinct start times), so their identities cannot collide.
+  [ "$newid" != "$otherid" ] || fail "fm_pid_identity failed to distinguish two distinct live processes"
+  pass "fm_pid_identity_matches confirms same-pid identity, honors legacy compat, and rejects foreign/empty"
+}
+
 test_singleton_start
 test_pid_identity_is_locale_invariant
+test_pid_identity_immune_to_clock_drift
+test_pid_identity_matches_and_compat
 test_stale_watch_lock_reclaimed
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings
