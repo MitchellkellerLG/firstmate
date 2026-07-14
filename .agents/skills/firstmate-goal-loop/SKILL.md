@@ -32,10 +32,11 @@ Run one independent verification round first:
 
 1. Confirm the crewmate actually authored `data/<id>/done-condition.md`.
    If it is missing, the goal-loop contract was not met: steer the crewmate to write it before you accept `done` (it is a `needs-decision`-style resume, not a checker round).
-2. Capture the diff to be reviewed with `bin/fm-review-diff.sh <id>` (it compares against the authoritative base, and includes no-mistakes fix rounds when a PR head is recorded).
+2. Capture the diff to be reviewed with `bin/fm-review-diff.sh <id>` (it compares against the authoritative base, and includes no-mistakes fix rounds when a PR head is recorded), and save it to a file firstmate owns, e.g. `bin/fm-review-diff.sh <id> > data/<id>/goal-loop-diff.patch`.
+   The checker spawns as a fresh scout in its own isolated worktree - a different pooled clone that will not have the original `fm/<id>` branch present - so it cannot recompute the diff itself; firstmate hands it the captured file.
 3. Spawn a SEPARATE crewmate as a scout on the same repo: `bin/fm-brief.sh <checker-id> <repo> --scout` then `bin/fm-spawn.sh <checker-id> projects/<repo> --scout`.
    This checker is fresh, with no memory of how the work was produced.
-   Give its `{TASK}` the checker contract below.
+   Give its `{TASK}` the checker contract below, with the real absolute paths to the captured diff (`data/<id>/goal-loop-diff.patch`) and the done-condition block (`data/<id>/done-condition.md`) so the checker reads both directly rather than trying to derive the diff from a branch it does not have.
 4. When the checker reports `done`, read its report at `data/<checker-id>/report.md` for the verdict, then tear the checker down (`bin/fm-teardown.sh <checker-id>` - a scout worktree is scratch once the report exists).
 
 Route on the verdict:
@@ -56,7 +57,7 @@ Do not silently keep spinning past the cap.
 Fill the checker scout brief's `{TASK}` with this, substituting the real ids/paths:
 
 > You are an independent reviewer. Open your report by stating plainly that you did NOT write the code under review and have no knowledge of how it was produced.
-> Read the done-condition block at `data/<id>/done-condition.md` and the branch diff (provided to you / obtainable via the base comparison).
+> Read the done-condition block at `data/<id>/done-condition.md` and the branch diff at `data/<id>/goal-loop-diff.patch`, both handed to you by firstmate; do not try to recompute the diff from a branch, which is not present in your worktree.
 > Score the diff against that block: run or reason about the mechanical gate, and judge the qualitative gate against what the diff actually does.
 > Write `data/<checker-id>/report.md` with a single explicit verdict line - `VERDICT: PASS` or `VERDICT: FAIL` - the reward-signal and mechanical-gate results, and, on FAIL, the specific properties the diff is missing so the author can fix them.
 > Do not fix the code yourself; you only score it.

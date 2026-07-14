@@ -340,7 +340,10 @@ EOF
     ;;
 esac
 
+RULE2="2. Stay inside this worktree; modify nothing outside it."
+
 if [ "$GOAL_LOOP" -eq 1 ]; then
+RULE2="2. Stay inside this worktree; the only file you may write outside it besides the status file is the done-condition block below."
 GOAL_LOOP_SECTION=$(cat <<EOF
 # Done condition (goal-loop)
 This task carries a stronger completion bar than the ship flow alone. Before writing any implementation, author a done-condition block and write it to \`$DATA/$ID/done-condition.md\` - that file, like a scout report, is the only write you may make outside this worktree besides the status file.
@@ -386,7 +389,7 @@ If the top-level path is the primary checkout or not the worktree you were launc
 
 # Rules
 $RULE1
-2. Stay inside this worktree; modify nothing outside it.
+$RULE2
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
