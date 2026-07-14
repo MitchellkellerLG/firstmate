@@ -28,6 +28,9 @@ fm_pid_alive() {
 # wall-clock lstart it does NOT re-render differently after a system-clock correction
 # (e.g. a WSL2 host waking from sleep). That drift made the same live process look
 # recycled and declared a healthy watcher dead - issue #433.
+# See docs/watcher-pid-identity.md for the incident and validation record covering
+# the identity helpers below (fm_pid_starttime, fm_pid_identity_legacy,
+# fm_pid_identity, fm_pid_identity_matches).
 fm_pid_starttime() {
   local pid=$1 stat rest
   case "$pid" in
