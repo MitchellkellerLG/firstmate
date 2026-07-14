@@ -12,7 +12,7 @@
 #   (a) active run-step is authoritative                          -> run-step
 #   (b) needs-decision/blocked log + resumed run = SUPERSEDED     -> run-step
 #   (c) genuine parked run + needs-decision log = NOT superseded  -> run-step
-#   (d) terminal run-step (passed/failed) is authoritative        -> run-step
+#   (d) terminal run-step is authoritative except a later pause  -> run-step/log
 #   (e) cross-branch attribution: this branch's own run found via list lookup
 #   (f) no run + busy pane                                        -> pane
 #   (g) no run + idle pane falls to the status-log verb           -> status-log
@@ -673,6 +673,52 @@ test_terminal_failed() {
   pass "terminal failed run is authoritative"
 }
 
+test_terminal_failed_then_paused() {
+  reset_fakes
+  local d; d=$(new_case failed-then-paused)
+  make_repo_on_branch "$d/wt" fm/feat-failed-paused
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-failed-paused.meta" "window=fm:fm-feat-failed-paused" "worktree=$d/wt" "kind=ship"
+  printf 'failed: validation run failed\npaused: awaiting the upstream release\n' > "$d/state/feat-failed-paused.status"
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-failed-paused)"
+  local out; out=$(run_crew_state "$d" feat-failed-paused)
+  assert_contains "$out" "state: paused" "later declared pause supersedes terminal failed run"
+  assert_contains "$out" "source: status-log" "post-failure pause is status-log sourced"
+  assert_contains "$out" "terminal run superseded by declared pause" "post-failure precedence is explicit"
+  PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" FM_CREW_STATE_BIN="$CREW_STATE" \
+    crew_is_paused feat-failed-paused \
+    || fail "watcher absorb classifier did not respect the post-failure pause"
+  pass "later declared pause supersedes terminal failed run"
+}
+
+test_active_run_supersedes_paused() {
+  reset_fakes
+  local d; d=$(new_case active-over-paused)
+  make_repo_on_branch "$d/wt" fm/feat-active-paused
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-active-paused.meta" "window=fm:fm-feat-active-paused" "worktree=$d/wt" "kind=ship"
+  printf 'failed: earlier validation failed\npaused: stale external wait\n' > "$d/state/feat-active-paused.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-active-paused)"
+  local out; out=$(run_crew_state "$d" feat-active-paused)
+  assert_contains "$out" "state: working" "active run supersedes stale declared pause"
+  assert_contains "$out" "source: run-step" "active run remains run-step sourced"
+  pass "active run supersedes stale declared pause"
+}
+
+test_passed_run_supersedes_paused() {
+  reset_fakes
+  local d; d=$(new_case passed-over-paused)
+  make_repo_on_branch "$d/wt" fm/feat-passed-paused
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-passed-paused.meta" "window=fm:fm-feat-passed-paused" "worktree=$d/wt" "kind=ship"
+  printf 'paused: stale external wait\n' > "$d/state/feat-passed-paused.status"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-passed-paused)"
+  local out; out=$(run_crew_state "$d" feat-passed-paused)
+  assert_contains "$out" "state: done" "passed run supersedes stale declared pause"
+  assert_contains "$out" "source: run-step" "passed run remains run-step sourced"
+  pass "passed run supersedes stale declared pause"
+}
+
 # (e) cross-branch attribution: `axi status` returns ANOTHER branch's run (the
 # routine case once more than one crew validates the same underlying repo
 # concurrently - they share ONE no-mistakes repo registration), so the helper
@@ -1155,6 +1201,9 @@ test_top_level_fixing_ci_running_after_green_stays_working
 test_top_level_fixing_done_log_stays_working
 test_terminal_passed
 test_terminal_failed
+test_terminal_failed_then_paused
+test_active_run_supersedes_paused
+test_passed_run_supersedes_paused
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status

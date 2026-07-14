@@ -23,7 +23,10 @@
 #      (from `axi status`, or the coarse `no-mistakes runs` fallback)?
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
-#      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
+#      passed/checks-passed -> done, failed/cancelled -> failed. A later explicit
+#      paused event may supersede only failed/cancelled: it declares the crew's
+#      current post-failure recovery state, while an active or successful run
+#      still supersedes any stale pause. EXCEPT: while
 #      the active step is ci, `axi status` alone cannot tell "still waiting on
 #      checks" from "checks green, waiting on merge" (see nm_ci_checks_state) -
 #      a ci-step log-tail check overrides working -> done once checks read
@@ -522,6 +525,16 @@ if [ "$HAVE_RUN" = 1 ]; then
     if [ "$CI_LOG_STATE" != not-ready ]; then
       emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR"
     fi
+  fi
+
+  # A failed/cancelled run is terminal history, not proof that the crew stayed
+  # failed forever. A later explicit pause is the crewmate's declaration that it
+  # recovered from that run and is now deliberately waiting on an external
+  # dependency. Respect that narrow transition here, at the current-state
+  # contract's owner. Active, parked, and successful runs remain authoritative,
+  # so stale pauses cannot mask ongoing work, an active gate, or a shipped result.
+  if [ "$RUN_STATE" = failed ] && status_is_paused "$LOG_LINE"; then
+    emit paused status-log "$(status_line_note "$LOG_LINE")${SEP}terminal run superseded by declared pause"
   fi
 
   # Reconcile the status log. A needs-decision/blocked log line that the run-step
