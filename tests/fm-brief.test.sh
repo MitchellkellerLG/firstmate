@@ -230,6 +230,62 @@ test_herdr_lab_contract_applies_to_scouts_but_not_secondmates() {
   pass "fm-brief.sh: Herdr lab contract covers scouts and rejects secondmate misuse"
 }
 
+test_goal_loop_ship_brief_carries_done_condition_and_gate() {
+  local home id brief
+  home="$TMP_ROOT/goal-loop-home"
+  mkdir -p "$home/data"
+  id="brief-goalloop-e1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --goal-loop >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "goal-loop brief was not scaffolded"
+  assert_grep "# Done condition (goal-loop)" "$brief" \
+    "goal-loop brief missing its Done condition section"
+  assert_grep "data/$id/done-condition.md" "$brief" \
+    "goal-loop brief did not point at the done-condition file"
+  assert_grep "Reward signal:" "$brief" "goal-loop brief missing the reward signal gate"
+  assert_grep "Mechanical gate:" "$brief" "goal-loop brief missing the mechanical gate"
+  assert_grep "Qualitative gate:" "$brief" "goal-loop brief missing the qualitative gate"
+  assert_grep "Done threshold:" "$brief" "goal-loop brief missing the done threshold"
+  assert_grep "who did not write your code" "$brief" \
+    "goal-loop brief missing the independent-reviewer contract"
+  assert_grep "# Definition of done (goal-loop gate)" "$brief" \
+    "goal-loop brief did not gate the definition of done"
+  # The gate layers on top of, not instead of, the normal no-mistakes definition of done.
+  assert_grep "no-mistakes itself provides for the mechanics" "$brief" \
+    "goal-loop gate replaced the normal no-mistakes definition of done instead of layering on it"
+  pass "fm-brief.sh: --goal-loop adds the done-condition section and gate"
+}
+
+test_goal_loop_absent_by_default() {
+  local home id brief
+  home="$TMP_ROOT/goal-loop-default-home"
+  mkdir -p "$home/data"
+  id="brief-goalloop-default-e2"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "plain ship brief was not scaffolded"
+  assert_no_grep "# Done condition (goal-loop)" "$brief" \
+    "plain ship brief leaked the opt-in goal-loop section"
+  assert_no_grep "goal-loop gate" "$brief" \
+    "plain ship brief leaked the opt-in goal-loop gate"
+  pass "fm-brief.sh: --goal-loop is opt-in and absent from routine ship briefs"
+}
+
+test_goal_loop_rejected_for_scout_and_secondmate() {
+  local home status
+  home="$TMP_ROOT/goal-loop-reject-home"
+  mkdir -p "$home/data"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" gl-scout some-proj --scout --goal-loop >/dev/null 2>&1; status=$?
+  expect_code 1 "$status" "--goal-loop on a scout brief must fail"
+  assert_absent "$home/data/gl-scout/brief.md" "rejected --goal-loop scout still wrote a brief"
+
+  FM_HOME="$home" FM_SECONDMATE_CHARTER=x "$ROOT/bin/fm-brief.sh" gl-sm --secondmate --no-projects --goal-loop >/dev/null 2>&1; status=$?
+  expect_code 1 "$status" "--goal-loop on a secondmate charter must fail"
+  assert_absent "$home/data/gl-sm/brief.md" "rejected --goal-loop secondmate still wrote a brief"
+  pass "fm-brief.sh: --goal-loop is ship-only and guards scout/secondmate misuse"
+}
+
 test_pause_verb_override_renders_all_brief_scaffolds() {
   local home kind id brief
   home="$TMP_ROOT/pause-verb-home"
@@ -276,4 +332,7 @@ test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
 test_herdr_lab_contract_applies_to_scouts_but_not_secondmates
 test_secondmate_no_projects_charter
+test_goal_loop_ship_brief_carries_done_condition_and_gate
+test_goal_loop_absent_by_default
+test_goal_loop_rejected_for_scout_and_secondmate
 test_pause_verb_override_renders_all_brief_scaffolds
