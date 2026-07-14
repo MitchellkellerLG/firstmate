@@ -135,9 +135,21 @@ make_no_timeout_toolbin() {  # <dir> -> echoes toolbin path
 }
 
 # Run the helper for one case dir. FM_FAKE_* env (run output, busy flag) are read
-# from the caller's environment by the fakes above.
+# from the caller's environment by the fakes above. NM_HOME is pinned per-case so
+# the failed->paused temporal check reads only run-log mtimes this test seeded
+# (via seed_run_log), never the operator's real ~/.no-mistakes/logs.
 run_crew_state() {  # <case-dir> <id>
-  PATH="$1/fakebin:$PATH" FM_STATE_OVERRIDE="$1/state" "$CREW_STATE" "$2"
+  PATH="$1/fakebin:$PATH" FM_STATE_OVERRIDE="$1/state" NM_HOME="$1/nmhome" "$CREW_STATE" "$2"
+}
+
+# Seed a fake no-mistakes run-log dir so nm_run_completed_ts has a real completion
+# mtime to compare the pause against. The run-object fixtures all use id 01RUN, so
+# that is the default run id. <touch-date> is any `touch -d` date string.
+seed_run_log() {  # <case-dir> <touch-date> [<run-id>]
+  local dir="$1/nmhome/logs/${3:-01RUN}"
+  mkdir -p "$dir"
+  : > "$dir/push.log"
+  touch -d "$2" "$dir/push.log"
 }
 
 new_case() {  # <name> -> echoes case dir with an empty state/
@@ -680,12 +692,16 @@ test_terminal_failed_then_paused() {
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-failed-paused.meta" "window=fm:fm-feat-failed-paused" "worktree=$d/wt" "kind=ship"
   printf 'failed: validation run failed\npaused: awaiting the upstream release\n' > "$d/state/feat-failed-paused.status"
+  # The run finished (its newest step-log mtime), THEN the crew declared the pause
+  # (the later status-file mtime): a proven post-run pause that supersedes.
+  seed_run_log "$d" '2020-01-01T00:00:00'
+  touch -d '2020-06-01T00:00:00' "$d/state/feat-failed-paused.status"
   FM_FAKE_AXI_STATUS="$(run_failed fm/feat-failed-paused)"
   local out; out=$(run_crew_state "$d" feat-failed-paused)
   assert_contains "$out" "state: paused" "later declared pause supersedes terminal failed run"
   assert_contains "$out" "source: status-log" "post-failure pause is status-log sourced"
   assert_contains "$out" "terminal run superseded by declared pause" "post-failure precedence is explicit"
-  PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" FM_CREW_STATE_BIN="$CREW_STATE" \
+  PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" NM_HOME="$d/nmhome" FM_CREW_STATE_BIN="$CREW_STATE" \
     crew_is_paused feat-failed-paused \
     || fail "watcher absorb classifier did not respect the post-failure pause"
   pass "later declared pause supersedes terminal failed run"
@@ -697,19 +713,38 @@ test_pre_run_paused_does_not_hide_failed() {
   make_repo_on_branch "$d/wt" fm/feat-paused-failed
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-paused-failed.meta" "window=fm:fm-feat-paused-failed" "worktree=$d/wt" "kind=ship"
-  # The crew declared the pause FIRST (external wait), then resumed, committed, and
-  # ran validation that failed without appending a new status line - so the last
-  # log line is still `paused` while the run is terminally failed. Pin the ordering
-  # deterministically: the pause append predates the resumed commit.
+  # The crew declared the pause FIRST (external wait), then resumed and ran
+  # validation that failed EARLY without committing evidence or advancing HEAD and
+  # without appending a new status line - so the last log line is still `paused`
+  # while the run is terminally failed. This is exactly the commit-less-early-
+  # failure gap the HEAD-committer-time proxy missed: the run's OWN completion time
+  # (its newest step-log mtime) is LATER than the pause append, so the pause is
+  # proven stale and must not mask the failure.
   printf 'paused: awaiting the upstream release\n' > "$d/state/feat-paused-failed.status"
   touch -d '2020-01-01T00:00:00' "$d/state/feat-paused-failed.status"
-  GIT_AUTHOR_DATE='2020-06-01T00:00:00' GIT_COMMITTER_DATE='2020-06-01T00:00:00' \
-    git -C "$d/wt" commit -q --allow-empty -m 'resumed work after pause'
+  seed_run_log "$d" '2020-06-01T00:00:00'
   FM_FAKE_AXI_STATUS="$(run_failed fm/feat-paused-failed)"
   local out; out=$(run_crew_state "$d" feat-paused-failed)
-  assert_contains "$out" "state: failed" "pre-run pause must not hide the later failed run"
+  assert_contains "$out" "state: failed" "pre-run pause must not hide the later commit-less failure"
   assert_contains "$out" "source: run-step" "unsuperseded failure stays run-step sourced"
-  pass "a pause declared before the failed run does not mask the failure"
+  pass "a pause declared before a commit-less failed run does not mask the failure"
+}
+
+test_paused_over_failed_fails_closed_without_run_timing() {
+  reset_fakes
+  local d; d=$(new_case paused-no-timing)
+  make_repo_on_branch "$d/wt" fm/feat-no-timing
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-no-timing.meta" "window=fm:fm-feat-no-timing" "worktree=$d/wt" "kind=ship"
+  # A paused line trailing a terminal failed run, but with NO resolvable run-log
+  # completion time (no seed_run_log). Ordering cannot be proven, so the supersede
+  # must fail closed and keep the genuine failure visible.
+  printf 'failed: validation run failed\npaused: awaiting the upstream release\n' > "$d/state/feat-no-timing.status"
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-no-timing)"
+  local out; out=$(run_crew_state "$d" feat-no-timing)
+  assert_contains "$out" "state: failed" "unprovable ordering fails closed to failed"
+  assert_contains "$out" "source: run-step" "fail-closed failure stays run-step sourced"
+  pass "a post-failure pause with no run timing fails closed to failed"
 }
 
 test_active_run_supersedes_paused() {
@@ -1224,6 +1259,7 @@ test_terminal_passed
 test_terminal_failed
 test_terminal_failed_then_paused
 test_pre_run_paused_does_not_hide_failed
+test_paused_over_failed_fails_closed_without_run_timing
 test_active_run_supersedes_paused
 test_passed_run_supersedes_paused
 test_cross_branch_attribution_via_runs_list

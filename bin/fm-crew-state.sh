@@ -25,11 +25,14 @@
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
 #      passed/checks-passed -> done, failed/cancelled -> failed. A later explicit
 #      paused event may supersede only failed/cancelled, and only when it is
-#      PROVEN to have been declared after that run (its status-log append is no
-#      older than the crew's HEAD commit, which the run cannot have finished
-#      before) - so it declares the crew's current post-failure recovery state,
-#      while a stale pre-run pause never hides a later genuine failure and an
-#      active or successful run still supersedes any stale pause. EXCEPT: while
+#      PROVEN to have been declared after that terminal run finished (its
+#      status-log append is no older than the run's own completion time, read
+#      from the newest mtime in the run's no-mistakes step-log directory) - so it
+#      declares the crew's current post-failure recovery state, while a stale
+#      pre-run pause never hides a later genuine failure (including a commit-less
+#      early failure that never advanced HEAD). Timing that is missing, malformed,
+#      or unprovable fails closed to failed, and an active or successful run still
+#      supersedes any stale pause. EXCEPT: while
 #      the active step is ci, `axi status` alone cannot tell "still waiting on
 #      checks" from "checks green, waiting on merge" (see nm_ci_checks_state) -
 #      a ci-step log-tail check overrides working -> done once checks read
@@ -142,21 +145,43 @@ path_mtime() {  # <path>
   fi
 }
 
+# Completion epoch of a terminal no-mistakes run, read from its own step logs.
+# no-mistakes writes one log file per step under <nm-home>/logs/<run-id>/ and
+# stamps each as that step runs, so the newest file mtime there is when the run
+# last did anything - i.e. when a terminal run finished (verified: it equals the
+# run's stored updated_at). Empty when the run id, its log dir, or the mtimes are
+# unresolvable, so the caller fails closed. nm-home defaults to $HOME/.no-mistakes
+# and honors NM_HOME, matching the CLI's own resolution.
+nm_run_completed_ts() {  # <run-id>
+  local id=$1 dir f m best=
+  [ -n "$id" ] || return 0
+  dir="${NM_HOME:-$HOME/.no-mistakes}/logs/$id"
+  [ -d "$dir" ] || return 0
+  for f in "$dir"/*; do
+    [ -f "$f" ] || continue
+    m=$(path_mtime "$f")
+    case "$m" in ''|*[!0-9]*) continue ;; esac
+    if [ -z "$best" ] || [ "$m" -gt "$best" ]; then best=$m; fi
+  done
+  printf '%s' "$best"
+}
+
 # Prove that the crew's declared pause (the last status-log append) happened after
-# a terminal failed/cancelled run, so it may supersede that run. The proof is a
-# timestamp comparison: the status file's mtime - when the pause line was appended -
-# must be no older than the crew's HEAD commit. A no-mistakes run cannot finish
-# before the commit it validates exists, so a pause older than HEAD necessarily
-# predates any run of that commit and is a stale pre-run pause that must not hide
-# the failure. Unreadable timestamps fail closed (return 1), preserving the failed
-# run's visibility.
-pause_after_failed_run() {
-  local pause_ts head_ts
+# the terminal failed/cancelled run it would supersede, so it may supersede that
+# run. The proof is a timestamp comparison against the run's OWN completion time
+# (nm_run_completed_ts), not a proxy: the status file's mtime - when the pause line
+# was appended - must be no older than when that run finished. A pause older than
+# the run's completion is a stale pre-run pause that must not hide the failure,
+# including a commit-less early failure that never advanced HEAD. An unreadable
+# pause mtime, an unknown/ambiguous run id, or a missing run completion time all
+# fail closed (return 1), preserving the failed run's visibility.
+pause_after_terminal_run() {  # <run-id>
+  local pause_ts done_ts
   pause_ts=$(path_mtime "$LOG")
   case "$pause_ts" in ''|*[!0-9]*) return 1 ;; esac
-  head_ts=$(git -C "$WT" show -s --format=%ct HEAD 2>/dev/null)
-  case "$head_ts" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$pause_ts" -ge "$head_ts" ]
+  done_ts=$(nm_run_completed_ts "$1")
+  case "$done_ts" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$pause_ts" -ge "$done_ts" ]
 }
 
 # pane_readable is consulted ONLY in the no-run fallback below. The run-step path
@@ -465,6 +490,7 @@ if [ "$HAVE_RUN" = 1 ]; then
   CI_STEP_STATUS=""
   CI_LOG_STATE=""
   RUN_STATUS=""
+  RUN_ID=""
   if [ "$RUN_SOURCE" = coarse ]; then
     # No step/gate detail is available from the plain runs list - only ever
     # true/working, done, or failed. A crew genuinely parked at a gate still
@@ -483,6 +509,7 @@ if [ "$HAVE_RUN" = 1 ]; then
   else
     status=$(strip_quotes "$(nm_field status)")
     RUN_STATUS=$status
+    RUN_ID=$(strip_quotes "$(nm_field id)")
     outcome=$(strip_quotes "$(nm_field outcome)")
     awaiting=$(printf '%s\n' "$RUN_OUT" | grep -E '^[[:space:]]*awaiting_agent:' | head -1 || true)
     gate_status=$(nm_gate_status)
@@ -562,12 +589,13 @@ if [ "$HAVE_RUN" = 1 ]; then
   # recovered from that run and is now deliberately waiting on an external
   # dependency. Respect that narrow transition here, at the current-state
   # contract's owner - but ONLY when the pause is proven to have been declared
-  # AFTER the failed run (pause_after_failed_run). A stale pause left from BEFORE
-  # the run - the crew paused, then resumed, ran, and failed without appending a
-  # new status line - must never mask that later genuine failure. Active, parked,
-  # and successful runs remain authoritative, so stale pauses cannot mask ongoing
-  # work, an active gate, or a shipped result either.
-  if [ "$RUN_STATE" = failed ] && status_is_paused "$LOG_LINE" && pause_after_failed_run; then
+  # AFTER that run finished (pause_after_terminal_run, against the run's own
+  # completion time). A stale pause left from BEFORE the run - the crew paused,
+  # then resumed, ran, and failed without appending a new status line - must never
+  # mask that later genuine failure, and unprovable timing fails closed to failed.
+  # Active, parked, and successful runs remain authoritative, so stale pauses
+  # cannot mask ongoing work, an active gate, or a shipped result either.
+  if [ "$RUN_STATE" = failed ] && status_is_paused "$LOG_LINE" && pause_after_terminal_run "$RUN_ID"; then
     emit paused status-log "$(status_line_note "$LOG_LINE")${SEP}terminal run superseded by declared pause"
   fi
 
