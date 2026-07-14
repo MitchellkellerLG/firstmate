@@ -6,7 +6,7 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> [--scout] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> [--scout] [--herdr-lab] [--goal-loop]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
@@ -26,6 +26,15 @@
 #   The flag must be explicit because {TASK} is filled after scaffolding and the
 #   caller-supplied repo string cannot reliably identify this repo. Briefs made
 #   without it carry a loud declaration so an omitted contract cannot be silent.
+#   --goal-loop raises the completion bar for a ship task that is large, ambiguous,
+#   or first-time-trust work (routine bug fixes and small features stay lightweight
+#   without it). It adds a "Done condition" section that has the crewmate author a
+#   measurable done-condition block (reward signal, mechanical gate, qualitative
+#   gate, done threshold) to data/<task-id>/done-condition.md before implementing,
+#   and gates the definition of done on an independent reviewer scoring the diff
+#   against that block. The firstmate-side checker lifecycle (a fresh reviewer with
+#   no memory of the work, the bounded fix loop, escalation) is owned by the
+#   firstmate-goal-loop skill; it is ship-only and rejected for scout/secondmate.
 # For ship tasks, the definition of done is shaped by the project's delivery mode
 # (data/projects.md via fm-project-mode.sh; see AGENTS.md project management
 # and task lifecycle):
@@ -72,6 +81,7 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 KIND=ship
 HERDR_LAB=0
+GOAL_LOOP=0
 NO_PROJECTS=0
 POS=()
 for a in "$@"; do
@@ -79,6 +89,7 @@ for a in "$@"; do
     --scout) KIND=scout ;;
     --secondmate) KIND=secondmate ;;
     --herdr-lab) HERDR_LAB=1 ;;
+    --goal-loop) GOAL_LOOP=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
     *) POS+=("$a") ;;
   esac
@@ -87,6 +98,11 @@ ID=${POS[0]}
 
 if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
   echo "error: --herdr-lab applies only to crewmate ship or scout briefs" >&2
+  exit 1
+fi
+
+if [ "$GOAL_LOOP" -eq 1 ] && [ "$KIND" != ship ]; then
+  echo "error: --goal-loop applies only to ship briefs" >&2
   exit 1
 fi
 
@@ -323,6 +339,33 @@ EOF
 )
     ;;
 esac
+
+if [ "$GOAL_LOOP" -eq 1 ]; then
+GOAL_LOOP_SECTION=$(cat <<EOF
+# Done condition (goal-loop)
+This task carries a stronger completion bar than the ship flow alone. Before writing any implementation, author a done-condition block and write it to \`$DATA/$ID/done-condition.md\` - that file, like a scout report, is the only write you may make outside this worktree besides the status file.
+The block is short and specific to THIS task; a vague block fails the independent check below. Name four things, one or two lines each:
+- Reward signal: the single measurable metric that says the work succeeded (a number, a passing count, a benchmark result).
+- Mechanical gate: a fast binary check with no LLM judgment (a command that exits zero, a test that passes).
+- Qualitative gate: what a passing review looks like - the specific properties a reader must confirm in the diff.
+- Done threshold: the exact bar all of the above must clear for this task to count as done.
+When you report \`done\`, firstmate has a separate reviewer - who did not write your code and has no memory of how you built it - score your branch diff against this block before the ship flow proceeds. A failing score comes back to you as the reviewer's feedback for another round; a passing score releases the flow below.
+EOF
+)
+# Fold the goal-loop section in after the Herdr block rather than adding a
+# template line, so the ship-brief template keeps its normal spacing untouched
+# for the common non-goal-loop path.
+HERDR_SECTION="$HERDR_SECTION
+
+$GOAL_LOOP_SECTION"
+DOD=$(cat <<EOF
+# Definition of done (goal-loop gate)
+This is a goal-loop task, so the ordinary definition of done below is gated: it does not count as satisfied until \`$DATA/$ID/done-condition.md\` exists and an independent reviewer scores your branch diff as passing that block. Only a passing score releases the flow described below.
+
+$DOD
+EOF
+)
+fi
 
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
