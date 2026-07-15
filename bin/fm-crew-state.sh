@@ -26,8 +26,9 @@
 #      passed/checks-passed -> done, failed/cancelled -> failed. A later explicit
 #      paused event may supersede only failed/cancelled, and only when it is
 #      PROVEN to have been declared after that terminal run finished (its
-#      status-log append is no older than the run's own completion time, read
-#      from the newest mtime in the run's no-mistakes step-log directory) - so it
+#      status-log append is strictly newer than the run's own completion time, read
+#      from the newest mtime in the run's no-mistakes step-log directory; an equal
+#      timestamp is ambiguous at mtime granularity and fails closed to failed) - so it
 #      declares the crew's current post-failure recovery state, while a stale
 #      pre-run pause never hides a later genuine failure (including a commit-less
 #      early failure that never advanced HEAD). Timing that is missing, malformed,
