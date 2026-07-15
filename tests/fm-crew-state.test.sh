@@ -730,6 +730,25 @@ test_pre_run_paused_does_not_hide_failed() {
   pass "a pause declared before a commit-less failed run does not mask the failure"
 }
 
+test_equal_time_pause_does_not_hide_failed() {
+  reset_fakes
+  local d; d=$(new_case paused-equal-failed)
+  make_repo_on_branch "$d/wt" fm/feat-paused-equal-failed
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-paused-equal-failed.meta" "window=fm:fm-feat-paused-equal-failed" "worktree=$d/wt" "kind=ship"
+  # One-second mtime granularity cannot prove which event came first when the
+  # pause append and terminal run completion timestamps tie. Fail closed so an
+  # immediately resumed, commit-less failure can never be masked as paused.
+  printf 'paused: awaiting the upstream release\n' > "$d/state/feat-paused-equal-failed.status"
+  touch -d '2020-01-01T00:00:00' "$d/state/feat-paused-equal-failed.status"
+  seed_run_log "$d" '2020-01-01T00:00:00'
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-paused-equal-failed)"
+  local out; out=$(run_crew_state "$d" feat-paused-equal-failed)
+  assert_contains "$out" "state: failed" "equal pause/run timestamps must fail closed to failed"
+  assert_contains "$out" "source: run-step" "equal-time failure stays run-step sourced"
+  pass "an equal-time pause cannot mask a terminal failed run"
+}
+
 test_paused_over_failed_fails_closed_without_run_timing() {
   reset_fakes
   local d; d=$(new_case paused-no-timing)
@@ -1259,6 +1278,7 @@ test_terminal_passed
 test_terminal_failed
 test_terminal_failed_then_paused
 test_pre_run_paused_does_not_hide_failed
+test_equal_time_pause_does_not_hide_failed
 test_paused_over_failed_fails_closed_without_run_timing
 test_active_run_supersedes_paused
 test_passed_run_supersedes_paused

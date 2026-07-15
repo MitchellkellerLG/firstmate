@@ -170,8 +170,9 @@ nm_run_completed_ts() {  # <run-id>
 # the terminal failed/cancelled run it would supersede, so it may supersede that
 # run. The proof is a timestamp comparison against the run's OWN completion time
 # (nm_run_completed_ts), not a proxy: the status file's mtime - when the pause line
-# was appended - must be no older than when that run finished. A pause older than
-# the run's completion is a stale pre-run pause that must not hide the failure,
+# was appended - must be strictly newer than when that run finished. An older or
+# equal timestamp is ambiguous at filesystem mtime granularity and must not hide
+# the failure,
 # including a commit-less early failure that never advanced HEAD. An unreadable
 # pause mtime, an unknown/ambiguous run id, or a missing run completion time all
 # fail closed (return 1), preserving the failed run's visibility.
@@ -181,7 +182,7 @@ pause_after_terminal_run() {  # <run-id>
   case "$pause_ts" in ''|*[!0-9]*) return 1 ;; esac
   done_ts=$(nm_run_completed_ts "$1")
   case "$done_ts" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$pause_ts" -ge "$done_ts" ]
+  [ "$pause_ts" -gt "$done_ts" ]
 }
 
 # pane_readable is consulted ONLY in the no-run fallback below. The run-step path
