@@ -477,7 +477,7 @@ That checks-green status is owed at the CI-ready return point, when `/no-mistake
 Use chat for yes/no decisions; use lavish-axi when there are multiple findings or options to triage.
 
 Judge a validating crewmate by the run's step status, never by whether its shell is still running.
-Read its current state with `bin/fm-crew-state.sh <id>`: a deterministic, token-tight one-line read that takes the matching no-mistakes run-step as the source of truth and reconciles it against the crewmate's `state/<id>.status` log.
+Read its current state with `bin/fm-crew-state.sh <id>`: a deterministic, token-tight one-line read that reconciles the matching no-mistakes run-step against the crewmate's `state/<id>.status` log according to the precedence contract owned by that script's header.
 Because the run-step is authoritative before pane liveness, a crewmate whose window closed after or during validation can still report `done` or `working` from its run; a missing pane becomes `unknown` only when no matching run exists.
 That log is an append-only wake-*event* log, not a current-state field, and it goes stale the moment a resolved gate lets the run resume: after you answer a `needs-decision`/`blocked` and the crewmate silently resumes (responds to the gate, the pipeline fixes, it re-validates), the log's last line still reads `needs-decision`/`blocked` while the run-step has moved on.
 So never infer current state from a `tail` of that log; `bin/fm-crew-state.sh` reports the live run-step state and explicitly flags the stale log line superseded, where a raw `tail` would mislead you into re-escalating settled work.
@@ -488,7 +488,7 @@ During the `ci` monitor phase, `bin/fm-crew-state.sh` also reads the ci step log
 - `awaiting_approval`/`fix_review` - the run is parked waiting on the agent, surfaced as a top-level `awaiting_agent: parked <duration>` line right after `status:` in `axi status`.
   The crewmate owes a response; if it is idle-waiting for the run to advance on its own, steer it to follow no-mistakes' active-gate help.
 - `outcome: passed` or `checks-passed` - the helper reports `done`; `passed` means the PR is already merged or closed, while `checks-passed` means it is ready for PR review.
-- `outcome: failed` or `cancelled` - the helper reports `failed`; inspect the run details and recover or report failure with evidence.
+- `outcome: failed` or `cancelled` - the helper reports `failed` (unless a declared pause proven to postdate that finished run supersedes it to `paused` per the script header's precedence contract); inspect the run details and recover or report failure with evidence.
 - Red flag - self-fix duplication: a validating crewmate making fresh hand-commits, aborting the run, or re-running it mid-validation is re-doing work the pipeline already owns.
   Steer it back to no-mistakes' respond flow; the pipeline, not the crewmate, applies validation fixes.
 
