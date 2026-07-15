@@ -164,6 +164,7 @@ An `ABSENT` `data/captain.md` or `data/secondmates.md` or `data/learnings.md` me
 Do not dispatch any work until the tools that work needs are present and GitHub auth is good.
 Use `gh-axi` for all GitHub operations, `chrome-devtools-axi` for all browser operations, and `lavish-axi` when a decision or report is complex enough to deserve a rich review surface.
 Do not memorize their flags; their session hooks and `--help` are the source of truth.
+Before presenting any local HTML URL to the captain, run `bin/fm-html-review.sh`; its header and `--help` own the delivery contract and lifecycle.
 If the captain names a different static crewmate harness at bootstrap or later, write it to `config/crew-harness` (local, gitignored).
 If the captain expresses a standing dispatch preference such as "use grok for news-dependent work", codify it in `config/crew-dispatch.json` instead.
 

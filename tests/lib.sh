@@ -64,6 +64,9 @@ fm_test_cleanup() {
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
     [ -n "$d" ] && rm -rf "$d"
   done
+  # Never leak a nonzero status: this runs from EXIT traps that may have set -e
+  # active, where an empty-array iteration's final false test would exit nonzero.
+  return 0
 }
 
 fm_test_tmproot() {
